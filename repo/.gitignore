@@ -1,0 +1,6 @@
+data/*.csv
+outputs/*.png
+outputs/*.jpg
+.Rhistory
+.RData
+.Rproj.user/
