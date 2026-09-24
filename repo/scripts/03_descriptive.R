@@ -62,6 +62,11 @@ ggplot(df, aes(x = loan_amount)) +
   geom_histogram(bins = 50) +
   labs(title = "Distribution of Loan Amount")
 
+#Loan Default Status bar chart
+ggplot(df, aes(x = Status)) +
+  geom_bar() +
+  labs(title = "Loan Default Status")
+
 
 # Default status
 ggplot(df, aes(x = Status)) +
