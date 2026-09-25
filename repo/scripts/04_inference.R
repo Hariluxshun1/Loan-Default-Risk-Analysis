@@ -1,16 +1,27 @@
-# 04_inference.R — Task 4: Statistical Inference
-# Owner: Person C
 source("scripts/00_setup.R")
 
-# ---- Example: comparison of means (income by default status) ----
-t.test(income ~ Status, data = df)
+# ---- Test 1: Comparison of Means — Income by Default Status ----
+# H0: mean income is equal between defaulters and non-defaulters
+# H1: mean income differs between defaulters and non-defaulters
 
-# ---- Example: comparison of proportions (default rate by Gender) ----
-table_gender <- table(df$Gender, df$Status)
-prop.test(table_gender)
+t_test_income <- t.test(income ~ Status, data = df)
+print(t_test_income)
 
-# ---- Example: ANOVA (loan_amount across loan_purpose) ----
+gender_table <- table(df$Gender, df$Status)
+print(gender_table)
+
+prop_test_gender <- prop.test(gender_table)
+print(prop_test_gender)
+
+
+#Anova test
 anova_model <- aov(loan_amount ~ loan_purpose, data = df)
 summary(anova_model)
 
-# TODO: add remaining hypothesis tests with H0/H1 stated in comments
+
+aggregate(loan_amount ~ loan_purpose, data = df, mean)
+TukeyHSD(anova_model)
+
+
+#Variance
+var.test(loan_amount ~ Status, data = df)

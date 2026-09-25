@@ -4,3 +4,4 @@ outputs/*.jpg
 .Rhistory
 .RData
 .Rproj.user/
+*.Rproj
