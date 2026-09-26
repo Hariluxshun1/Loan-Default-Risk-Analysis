@@ -1,6 +1,10 @@
 # 03_descriptive.R — Task 3: Dataset Understanding & Descriptive Analysis
 # Owner: Person B
 
+setwd("C:/Users/ASUS/Desktop/IT24102152_SM_Assignment/Loan-Default-Risk-Analysis/repo")
+getwd()
+file.exists("scripts/00_setup.R")
+
 source("scripts/00_setup.R")
 
 
@@ -72,3 +76,4 @@ ggplot(df, aes(x = Status)) +
 ggplot(df, aes(x = Status)) +
   geom_bar() +
   labs(title = "Loan Default Status")
+
