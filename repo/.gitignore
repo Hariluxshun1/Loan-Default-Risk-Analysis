@@ -5,3 +5,4 @@ outputs/*.jpg
 .RData
 .Rproj.user/
 *.Rproj
+.DS_Store
