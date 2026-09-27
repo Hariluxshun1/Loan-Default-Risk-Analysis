@@ -1,5 +1,5 @@
 # 05_modelling.R — Task 5: Predictive Statistical Modelling
-# Owner: Person C
+
 
 source("scripts/00_setup.R")
 
@@ -119,14 +119,91 @@ recall_03 <- conf_matrix_03["1", "1"] / sum(conf_matrix_03[, "1"])
 cat("Recall at 0.3 threshold:", round(recall_03, 4), "\n")
 
 # Result: lowering the threshold to 0.3 barely improves recall (0.03%
-# -> 0.94%) while accuracy stays flat (~83.7-83.8%).
+# -> 0.94%) while accuracy stays flat (~83.7-83.8%). Threshold choice
+# alone cannot fix a model with weak underlying discriminative power.
+
+
+# =========================================================
+# Addressing Class Imbalance
+# =========================================================
+# The baseline model's near-zero recall is a class imbalance problem
+# (~76% non-default / 24% default). Three techniques are compared below.
+
+# ---- Technique 1: SMOTE (Synthetic Minority Oversampling) ----
+library(smotefamily)
+
+smote_data <- df[, c("Status", "loan_amount", "income", "LTV", "dtir1", "Credit_Score")]
+smote_data <- na.omit(smote_data)
+
+smote_result <- SMOTE(X = smote_data[, -1], target = smote_data$Status, K = 5, dup_size = 2)
+balanced_data <- smote_result$data
+names(balanced_data)[ncol(balanced_data)] <- "Status"
+balanced_data$Status <- as.factor(balanced_data$Status)
+
+table(balanced_data$Status)   # new class balance: ~104k / ~61k
+
+log_model_smote <- glm(Status ~ loan_amount + income + LTV + dtir1 + Credit_Score,
+                       data = balanced_data, family = binomial)
+summary(log_model_smote)
+
+pred_smote <- predict(log_model_smote, type = "response")
+class_smote <- ifelse(pred_smote > 0.5, 1, 0)
+conf_smote <- table(Predicted = class_smote, Actual = balanced_data$Status)
+print(conf_smote)
+
+accuracy_smote <- sum(diag(conf_smote)) / sum(conf_smote)
+cat("Accuracy (SMOTE):", round(accuracy_smote, 4), "\n")
+
+recall_smote <- conf_smote["1", "1"] / sum(conf_smote[, "1"])
+cat("Recall (SMOTE):", round(recall_smote, 4), "\n")
+
+auc(roc(balanced_data$Status, pred_smote))
+
+# Result: SMOTE improved recall substantially (0.03% -> 6.13%, ~200x
+# more defaulters caught) but at a steep accuracy cost (83.68% -> 63.69%).
+# AUC barely changed (0.6136 -> 0.6153).
+
+
+# ---- Technique 2: Class-Weighted Logistic Regression ----
+class_weights <- ifelse(df$Status == "1",
+                        sum(df$Status == "0") / sum(df$Status == "1"),
+                        1)
+
+log_model_weighted <- glm(Status ~ loan_amount + income + LTV + dtir1 + Credit_Score,
+                          data = df, family = binomial, weights = class_weights)
+summary(log_model_weighted)
+
+pred_weighted <- predict(log_model_weighted, type = "response")
+class_weighted <- ifelse(pred_weighted > 0.5, 1, 0)
+conf_weighted <- table(Predicted = class_weighted, Actual = log_model_weighted$model$Status)
+print(conf_weighted)
+
+accuracy_weighted <- sum(diag(conf_weighted)) / sum(conf_weighted)
+cat("Accuracy (weighted):", round(accuracy_weighted, 4), "\n")
+
+recall_weighted <- conf_weighted["1", "1"] / sum(conf_weighted[, "1"])
+cat("Recall (weighted):", round(recall_weighted, 4), "\n")
+
+auc(roc(log_model_weighted$model$Status, pred_weighted))
+
+# Result: Weighted GLM achieved similar recall to SMOTE (6.50% vs 6.13%)
+# while keeping accuracy much closer to baseline (83.19% vs 63.69% for
+# SMOTE) — a clearly better trade-off. AUC again stayed flat (0.6113).
 #
-# Business implication: the limitation isn't threshold choice, it's that
-# these 5 predictors don't carry enough discriminative power (AUC=0.61)
-# to reliably separate defaulters from non-defaulters. For production
-# use, the bank would need additional variables (e.g. credit history
-# depth, employment stability, loan-purpose-specific risk factors from
-# Task 4) rather than relying on threshold tuning alone.
+# Comparison across all techniques:
+#   Baseline GLM   -> AUC 0.614 | Recall 0.03%  | Accuracy 83.68%
+#   SMOTE + GLM    -> AUC 0.615 | Recall 6.13%  | Accuracy 63.69%
+#   Weighted GLM   -> AUC 0.611 | Recall 6.50%  | Accuracy 83.19%
+#
+# Business implication: class weighting is the more efficient imbalance-
+# correction technique — it improves recall as much as SMOTE without
+# sacrificing nearly as much accuracy, since it adjusts the loss function
+# rather than physically altering the training data. However, AUC stayed
+# essentially flat across ALL THREE logistic-based approaches (~0.61),
+# proving conclusively that class imbalance was never the fundamental
+# constraint — the limitation is the discriminative power of the five
+# predictors themselves. No amount of resampling or weighting can
+# manufacture predictive signal the underlying variables don't have.
 
 
 # =========================================================
@@ -149,11 +226,18 @@ vif(log_model)
 # =========================================================
 # Final Model Recommendation
 # =========================================================
-# We recommend plain logistic regression as the baseline model for its
-# interpretability and regulatory transparency. Ridge and LASSO produce
-# nearly identical coefficients, confirming model stability rather than
-# overfitting, so their added complexity isn't justified here. However,
-# the model's discriminative power is modest (AUC = 0.61), and
-# Credit_Score contributes no significant signal. We recommend the bank
-# expand the feature set beyond these five variables before relying on
-# this model for real credit decisions.
+# We recommend plain logistic regression, with class weighting applied,
+# as the final model. Ridge and LASSO produce nearly identical
+# coefficients to the unweighted baseline, confirming model stability
+# rather than overfitting, so their added complexity isn't justified.
+# Weighted GLM is preferred over SMOTE for addressing class imbalance,
+# since it achieves comparable recall improvement without SMOTE's steep
+# accuracy cost. However, AUC remained modest (~0.61-0.68 across all
+# models tested, including Naive Bayes in Task 8) regardless of
+# resampling, weighting, or threshold technique — confirming the
+# limitation lies in the discriminative power of the five predictors
+# available, not in how the imbalance or threshold was handled. We
+# recommend the bank prioritize acquiring additional predictive
+# variables (e.g. credit history depth, employment stability,
+# loan-purpose-specific risk factors from Task 4) as the primary path
+# to improving default detection, rather than further resampling.
