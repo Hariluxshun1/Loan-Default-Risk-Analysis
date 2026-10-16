@@ -1,33 +1,114 @@
-# LoanRisk Analytics — Dashboard Version 3 (expert-informed)
+# LoanRisk Analytics — Shiny Dashboard Version 4
 
-This R Shiny app updates Version 2 based on feedback from one senior-level banking officer with more than 20 years of experience. The reviewer gave relevance and clarity ratings of 2/5 for the earlier version and asked for a simpler, more welcoming interface and clearer terminology.
+**IT3081 Statistical Modelling Consultancy Project | Group 2026-DS-37**
 
-## What changed
-- New **What does this dashboard do?** introduction and step-by-step navigation overview.
-- Plain-language choices and descriptions for precision, recall, F1, and ROC-AUC.
-- Specific example of the Naive Bayes trade-off: 5,715 correctly flagged Status 1 records, 13,044 incorrectly flagged Status 0 records.
-- Simple summaries before the statistics and PCA charts.
-- Expert-review tab now contains anonymized original ratings and feedback, plus a completed change log.
+**Live dashboard:** https://loanrisk-analytics.shinyapps.io/loanrisk-analytics/
 
-## Important limitations
-- The **Status 1** label remains unverified as a repayment-default outcome. Do not represent model predictions as actual credit default risk or use them for decisions.
-- The dataset has no monthly borrower repayment history. Time-series enhancement remains conceptual.
-- One expert's rating is preliminary feedback, not a representative survey or post-revision validation. No post-update rating is claimed.
-- Only aggregated data are distributed with this application.
+This R Shiny application presents the group's **academic Loan Default Risk Analysis** in a form intended to be understandable to nontechnical stakeholders. It explores loan-record patterns, compares six research models, summarizes statistical tests and PCA, and documents feedback from a banking-industry reviewer.
 
-## Install in your existing RStudio project
+> **Target definition and scope:** The project uses `Status = 1` for **default** and `Status = 0` for **non-default**. This is the working classification in the analyses. The original data supplier's outcome definition still warrants independent verification with documented repayment outcomes. The application is **not** suitable for real credit decisions.
 
-1. Stop your currently running Shiny app.
-2. Back up `repo/Dashboard/` (or `repo/dashboard/`).
-3. Extract this ZIP, then copy **the contents** of `LoanRisk_Dashboard_v3/` into the existing `repo/Dashboard/` folder. `app.R` and `data/` should sit directly inside `Dashboard/`.
-4. With `getwd()` pointing to `repo/`, run `shiny::runApp("Dashboard")`.
-5. Check Overview, Model Comparison, Statistical Findings, PCA & Experiments and Expert Review.
-6. Republish the updated Shiny app with `rsconnect::deployApp(appDir="Dashboard", appName="loanrisk-analytics", account="loanrisk-analytics")` from `repo/`, after confirming the proper account is configured.
+## What's new in Version 4
 
-If your folder is lowercase (`dashboard`), use that spelling consistently.
+Version 4 builds on the earlier user-friendliness revisions and uses **loan default / non-default** wording consistently in the dashboard interface.
 
-The published dashboard does **not** update when you only change local R files or push to GitHub; you must redeploy to shinyapps.io.
+- **Overview:** A plain-language explanation of the dashboard purpose and how to navigate its findings, plus a clear target-definition explanation.
+- **Model Comparison:** Six-model comparison with descriptions of F1, ROC-AUC, recall, precision, and false-alarm trade-offs.
+- **Statistical Findings:** Accessible summaries of Task 4 hypothesis tests, effect sizes, and missing-data concerns.
+- **PCA & Experiments:** Seven-variable PCA and the **simulated** CRD and RCBD research exercises.
+- **Expert Review:** Actual anonymized preliminary feedback, changes made in response, questionnaire download, and methodological cautions.
 
-## Notes for the presentation
+## Key figures shown
 
-Our group developed an R Shiny dashboard and sought feedback from a senior-level banking officer with over 20 years of experience. The expert rated relevance and clarity 2/5 and asked for less technical wording and a clearer purpose. We updated the overview, chart explanations, and expert-review transparency. We have **not** yet shown that those changes improve usability scores; a follow-up review would be required.
+| Measure | Research result |
+|---|---:|
+| Loan observations | 148,670 |
+| Project-defined default rate | 24.64% |
+| Highest validation F1 model | Naive Bayes |
+| Naive Bayes held-out test F1 | 0.4381 |
+| Naive Bayes held-out test ROC-AUC | 0.6208 |
+| Naive Bayes test true positives | 5,715 |
+| Naive Bayes test false positives | 13,044 |
+| First five PCs: variance explained | 91.42% |
+
+These metrics are **not** evidence of operational model validity. In particular, ROC-AUC **0.6208 is not 62.08% accuracy**, and 91.42% PCA variance explained is **not** prediction accuracy.
+
+## Files and data
+
+```text
+Dashboard/
+├── README.md
+├── app.R
+└── data/
+    ├── model_comparison.csv
+    ├── pca_variance.csv
+    ├── by_region.csv
+    ├── by_gender.csv
+    ├── by_age.csv
+    ├── by_loan_purpose.csv
+    └── by_credit_type.csv
+```
+
+All shipped CSV files are **aggregated analysis outputs**. The Shiny app does **not** require or publish the raw `Loan_Default.csv` dataset or individual borrower-level records. Do not replace the shipped CSVs with confidential records.
+
+## Run the application locally
+
+1. Install **R**, **RStudio**, and the **`shiny`** package:
+
+   ```r
+   install.packages("shiny")
+   ```
+
+2. Open the main RStudio project and set the working directory to the inner **`repo/`** folder.
+3. Start the application:
+
+   ```r
+   shiny::runApp("Dashboard")
+   ```
+
+4. Open all five tabs and verify that the main KPI reads **Loan default rate (24.64%)**. The folder name is `Dashboard` with a capital **D**.
+
+For local testing, no shinyapps.io credentials are needed.
+
+## Redeploy to shinyapps.io
+
+Install `rsconnect` if needed, and connect your own account using its official authentication workflow (do not commit tokens or secrets). From the `repo/` working directory:
+
+```r
+rsconnect::deployApp(
+  appDir = "Dashboard",
+  appName = "loanrisk-analytics",
+  account = "loanrisk-analytics"
+)
+```
+
+If prompted, choose to **update the existing application**, not create a new one. Successful redeployment should retain the current URL. A **GitHub push alone does not update** the deployed app.
+
+### Optional external expert-feedback link
+
+The app reads an optional environment variable named `LOANRISK_FEEDBACK_URL`. If set to a valid `https://` URL, a link to the external questionnaire is shown. Otherwise, the dashboard offers its downloadable questions. It does not itself store survey responses.
+
+Keep any environment settings and survey-response files private. Do not publish personal or identifying details of the expert.
+
+## Banking expert evaluation
+
+A senior-level banking officer with **over 20 years' experience** reviewed an earlier version. The reviewer rated:
+
+- **Relevance for exploring loan-risk patterns:** 2/5.
+- **Clarity of charts and explanations:** 2/5.
+
+The reviewer highlighted uncertainty about the outcome definition, requested more understandable descriptions, and identified **repayment history** and **employment/income history** as useful additional data. Version 4 improves the introduction, metric descriptions, error examples, and disclosure of the target coding and research limitations.
+
+**Important:** These ratings apply to the **earlier prototype**, not to Version 4. There is no confirmed follow-up usability score or second independent expert validation.
+
+## Research limitations
+
+- The dataset contains one recorded year (**2019**), without the longitudinal repayment history needed for genuine time-series default forecasting.
+- Outcome meaning requires independent source-level verification before business interpretation.
+- Outcome-associated missingness and unusually high LTV observations may affect estimates; the models are exploratory.
+- Naive Bayes has limited discriminative performance and many false positives at the selected threshold.
+- The CRD and RCBD plots illustrate **simulated**, not observed, intervention outcomes.
+- PCA describes variation in input variables, not the proportion of defaults predicted.
+- No automated accept/reject decisions, personal loan scoring, regulatory compliance claim, or production service is provided.
+
+For the full research workflow, see the [main project README](../README.md).
