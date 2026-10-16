@@ -1,243 +1,213 @@
-# 05_modelling.R — Task 5: Predictive Statistical Modelling
-
-
+# =============================================================
+# IT3081 - TASK 5: PREDICTIVE STATISTICAL MODELLING
+# Project: Loan Default Risk Analysis | Owner: Person C
+# Run from the repo/ working directory.
+# =============================================================
 source("scripts/00_setup.R")
 
+required_packages <- c("glmnet", "pROC", "smotefamily")
+missing_packages <- required_packages[!vapply(required_packages, requireNamespace,
+                                            logical(1), quietly = TRUE)]
+if (length(missing_packages) > 0) {
+  stop("Install missing packages first: install.packages(c(",
+       paste(sprintf('"%s"', missing_packages), collapse = ", "), "))")
+}
 
-# =========================================================
-# Data leakage check: why rate_of_interest, Interest_rate_spread
-# and Upfront_charges are excluded from the model
-# =========================================================
-# An initial model including rate_of_interest failed to converge
-# (huge standard errors, AIC of 12 for 100k+ rows). This diagnostic
-# check explains why:
+# The project's interpretation is Status 0 = non-default, 1 = default.
+# Confirm the original dataset's meaning before making business claims.
+features <- c("loan_amount", "income", "LTV", "dtir1", "Credit_Score")
+needed <- c("Status", features)
+stopifnot(all(needed %in% names(df)))
 
-table(df$Status, is.na(df$rate_of_interest))
-table(df$Status, is.na(df$dtir1))
+cat("\n===== 1. DATA QUALITY AND POSSIBLE LEAKAGE =====\n")
+for (variable in c("rate_of_interest", "Interest_rate_spread",
+                   "Upfront_charges", "dtir1")) {
+  if (variable %in% names(df)) {
+    cat("\nMissingness by Status:", variable, "\n")
+    print(table(Status = df$Status, Missing = is.na(df[[variable]])))
+  }
+}
+# Exclude rate-related columns because they may be recorded after loan
+# processing and their missingness may reveal the Status outcome.
+# Exclusion is precautionary; it is not proof of the data-generation mechanism.
+# dtir1 is retained for continuity with the initial model, but its
+# outcome-dependent missingness is a major selection-bias limitation.
 
-# Finding: rate_of_interest is missing for 0% of non-defaulters but
-# ~99.5% of defaulters — missingness is essentially a perfect proxy
-# for default status (likely because this field is only recorded once
-# a loan is fully processed, which never happens for defaulted loans).
-# This is data leakage, not a usable predictor, so it — along with
-# Interest_rate_spread and Upfront_charges, which share the same
-# missingness pattern — is excluded from the model below.
-# dtir1 shows a milder version of the same pattern but is kept, since
-# it's still meaningfully populated for both groups.
+model_data <- df[, needed]
+model_data$Status <- factor(as.character(model_data$Status), levels = c("0", "1"))
+stopifnot(!anyNA(model_data$Status))
 
+original_n <- nrow(model_data)
+model_data <- model_data[complete.cases(model_data), , drop = FALSE]
+cat("\nOriginal rows:", original_n,
+    "| Complete cases:", nrow(model_data),
+    "| Dropped:", original_n - nrow(model_data), "\n")
+cat("Full-data default rate:", mean(df$Status == "1"), "\n")
+cat("Complete-case default rate:", mean(model_data$Status == "1"), "\n")
+# Complete-case results describe the subset with all five predictors.
+# They may not generalize to applicants with missing income/LTV/DTI.
 
-# =========================================================
-# Baseline Logistic Regression
-# =========================================================
-log_model <- glm(Status ~ loan_amount + income + LTV + dtir1 + Credit_Score,
-                 data = df, family = binomial)
-summary(log_model)
+cat("\n===== 2. STRATIFIED 70/30 TRAIN / TEST SPLIT =====\n")
+set.seed(3081)
+indices_0 <- which(model_data$Status == "0")
+indices_1 <- which(model_data$Status == "1")
+train_indices <- sort(c(sample(indices_0, floor(0.70 * length(indices_0))),
+                        sample(indices_1, floor(0.70 * length(indices_1)))))
+train <- model_data[train_indices, , drop = FALSE]
+test <- model_data[-train_indices, , drop = FALSE]
+rownames(train) <- NULL
+rownames(test) <- NULL
+cat("Train rows:", nrow(train), "| Test rows:", nrow(test), "\n")
+cat("Training status distribution:\n")
+print(prop.table(table(train$Status)))
+cat("Test status distribution:\n")
+print(prop.table(table(test$Status)))
+# The test data must remain untouched: no SMOTE, reweighting or fitting.
 
-# Result: converges properly (AIC = 108,651). Significant predictors
-# (p < 0.001): loan_amount (-), income (-), LTV (+), dtir1 (+).
-# Credit_Score is NOT significant (p = 0.137).
-#
-# Business implication: LTV and DTI ratio are the strongest drivers of
-# default risk, followed by income and loan amount. Credit_Score shows
-# no significant relationship with default in this dataset — consistent
-# with its near-zero correlation with every other variable found during
-# data exploration, suggesting a data quality issue with this field
-# rather than a genuine absence of predictive value for credit scores
-# in general.
+formula_model <- Status ~ loan_amount + income + LTV + dtir1 + Credit_Score
 
+cat("\n===== 3. BASELINE LOGISTIC REGRESSION =====\n")
+log_model <- glm(formula_model, data = train, family = binomial())
+print(summary(log_model))
+prob_logistic <- as.numeric(predict(log_model, newdata = test, type = "response"))
+# Coefficients reflect conditional associations, not causal effects.
+# Linearity of each numeric predictor on the log-odds scale should be checked.
 
-# =========================================================
-# Ridge & LASSO Regression (comparison against baseline)
-# =========================================================
-library(glmnet)
+cat("\n===== 4. RIDGE AND LASSO (CV ON TRAINING DATA ONLY) =====\n")
+x_train <- model.matrix(formula_model, data = train)[, -1, drop = FALSE]
+x_test <- model.matrix(formula_model, data = test)[, -1, drop = FALSE]
+y_train <- as.integer(as.character(train$Status))
+set.seed(3081)
+cv_ridge <- glmnet::cv.glmnet(x_train, y_train, family = "binomial",
+                              alpha = 0, nfolds = 10, type.measure = "deviance")
+set.seed(3081)
+cv_lasso <- glmnet::cv.glmnet(x_train, y_train, family = "binomial",
+                              alpha = 1, nfolds = 10, type.measure = "deviance")
+cat("Ridge lambda.min:", cv_ridge$lambda.min, "\n")
+cat("LASSO lambda.min:", cv_lasso$lambda.min, "\n")
+cat("Ridge coefficients:\n")
+print(coef(cv_ridge, s = "lambda.min"))
+cat("LASSO coefficients:\n")
+print(coef(cv_lasso, s = "lambda.min"))
+prob_ridge <- as.numeric(predict(cv_ridge, newx = x_test,
+                                 s = "lambda.min", type = "response"))
+prob_lasso <- as.numeric(predict(cv_lasso, newx = x_test,
+                                 s = "lambda.min", type = "response"))
+# glmnet standardizes numeric predictors internally using training data.
 
-model_data <- df[, c("Status", "loan_amount", "income", "LTV", "dtir1", "Credit_Score")]
-model_data <- na.omit(model_data)
+cat("\n===== 5. CLASS-WEIGHTED LOGISTIC REGRESSION =====\n")
+train_counts <- table(train$Status)
+minority_weight <- as.numeric(train_counts["0"] / train_counts["1"])
+weights_train <- ifelse(train$Status == "1", minority_weight, 1)
+cat("Default class weight:", round(minority_weight, 4), "\n")
+# A non-integer-successes warning may occur with non-integer case weights;
+# it is expected for this weighted binomial GLM, not a test-data issue.
+weighted_model <- glm(formula_model, data = train, family = binomial(),
+                      weights = weights_train)
+prob_weighted <- as.numeric(predict(weighted_model, newdata = test,
+                                    type = "response"))
 
-x <- model.matrix(Status ~ loan_amount + income + LTV + dtir1 + Credit_Score,
-                  data = model_data)[, -1]
-y <- model_data$Status
+cat("\n===== 6. SMOTE + LOGISTIC REGRESSION (TRAINING ONLY) =====\n")
+set.seed(3081)
+smote_result <- smotefamily::SMOTE(
+  X = train[, features, drop = FALSE],
+  target = train$Status,
+  K = 5,
+  dup_size = 2
+)
+smote_train <- as.data.frame(smote_result$data)
+# smotefamily places the output class label in the last column.
+names(smote_train)[ncol(smote_train)] <- "Status"
+smote_train$Status <- factor(as.character(smote_train$Status), levels = c("0", "1"))
+stopifnot(!anyNA(smote_train$Status), all(features %in% names(smote_train)))
+cat("SMOTE training distribution:\n")
+print(table(smote_train$Status))
+smote_model <- glm(formula_model, data = smote_train, family = binomial())
+prob_smote <- as.numeric(predict(smote_model, newdata = test,
+                                 type = "response"))
+# NEVER evaluate on the synthetic SMOTE training set.
 
-ridge_model <- glmnet(x, y, family = "binomial", alpha = 0)
-lasso_model <- glmnet(x, y, family = "binomial", alpha = 1)
+cat("\n===== 7. COMMON UNTOUCHED TEST-SET EVALUATION =====\n")
+# Status 1 is always the positive class.
+# Thresholds 0.50 and 0.30 are prespecified illustrations, not optimized
+# on the test set. Operational thresholds require cost and calibration review.
+evaluate_model <- function(name, actual, probabilities, threshold = 0.5) {
+  stopifnot(length(actual) == length(probabilities),
+            !anyNA(probabilities),
+            all(is.finite(probabilities)),
+            all(probabilities >= 0 & probabilities <= 1))
+  actual <- factor(as.character(actual), levels = c("0", "1"))
+  predicted <- factor(ifelse(probabilities >= threshold, "1", "0"),
+                      levels = c("0", "1"))
+  cm <- table(Predicted = predicted, Actual = actual)
+  tn <- unname(cm["0", "0"])
+  fp <- unname(cm["1", "0"])
+  fn <- unname(cm["0", "1"])
+  tp <- unname(cm["1", "1"])
+  safe_ratio <- function(numerator, denominator) {
+    if (denominator == 0) return(NA_real_)
+    numerator / denominator
+  }
+  precision <- safe_ratio(tp, tp + fp)
+  recall <- safe_ratio(tp, tp + fn)
+  specificity <- safe_ratio(tn, tn + fp)
+  f1 <- if (is.na(precision) || is.na(recall) ||
+            precision + recall == 0) NA_real_ else
+    2 * precision * recall / (precision + recall)
+  roc_obj <- pROC::roc(response = actual, predictor = probabilities,
+                        levels = c("0", "1"), direction = "<", quiet = TRUE)
+  result <- data.frame(Model = name, Threshold = threshold,
+                       Accuracy = (tp + tn) / sum(cm),
+                       Precision = precision, Recall = recall,
+                       Specificity = specificity, F1 = f1,
+                       AUC = as.numeric(pROC::auc(roc_obj)),
+                       TP = tp, FP = fp, TN = tn, FN = fn)
+  list(metrics = result, confusion_matrix = cm, roc = roc_obj)
+}
 
-cv_ridge <- cv.glmnet(x, y, family = "binomial", alpha = 0)
-cv_lasso <- cv.glmnet(x, y, family = "binomial", alpha = 1)
+predictions <- list(
+  "Baseline logistic" = prob_logistic,
+  "Ridge logistic" = prob_ridge,
+  "LASSO logistic" = prob_lasso,
+  "Weighted logistic" = prob_weighted,
+  "SMOTE logistic" = prob_smote
+)
+results_05 <- lapply(names(predictions), function(name) {
+  evaluate_model(name, test$Status, predictions[[name]], threshold = 0.5)
+})
+comparison_05 <- do.call(rbind, lapply(results_05, `[[`, "metrics"))
+comparison_05 <- comparison_05[order(-comparison_05$AUC), ]
+rownames(comparison_05) <- NULL
+cat("\nTEST-SET COMPARISON AT THRESHOLD 0.50:\n")
+print(comparison_05, row.names = FALSE, digits = 4)
 
-best_ridge_lambda <- cv_ridge$lambda.min
-best_lasso_lambda <- cv_lasso$lambda.min
+cat("\nCONFUSION MATRICES (TEST SET, THRESHOLD 0.50):\n")
+for (i in seq_along(results_05)) {
+  cat("\n", names(predictions)[i], "\n", sep = "")
+  print(results_05[[i]]$confusion_matrix)
+}
 
-coef(cv_ridge, s = best_ridge_lambda)
-coef(cv_lasso, s = best_lasso_lambda)
+results_03 <- lapply(names(predictions), function(name) {
+  evaluate_model(name, test$Status, predictions[[name]], threshold = 0.3)
+})
+comparison_03 <- do.call(rbind, lapply(results_03, `[[`, "metrics"))
+cat("\nTEST-SET COMPARISON AT THRESHOLD 0.30 (ILLUSTRATIVE):\n")
+print(comparison_03, row.names = FALSE, digits = 4)
 
-# Result: Ridge and LASSO produce coefficients nearly identical to the
-# baseline logistic regression for loan_amount, income, LTV and dtir1 —
-# confirming the baseline model is stable, not overfitting. LASSO shrinks
-# Credit_Score's coefficient by more than half (9.9e-05 -> 4.2e-05),
-# independently confirming it as the weakest predictor.
-#
-# Business implication: since regularization barely changes the model,
-# added complexity isn't earning its keep here — plain logistic
-# regression is preferred for its interpretability and regulatory
-# transparency, without sacrificing performance.
-
-
-# =========================================================
-# Model Evaluation: AUC & Confusion Matrix
-# =========================================================
-library(pROC)
-
-predicted_probs <- predict(log_model, type = "response")
-
-roc_obj <- roc(log_model$model$Status, predicted_probs)
-auc(roc_obj)
-plot(roc_obj, main = "ROC Curve - Logistic Regression")
-
-predicted_class <- ifelse(predicted_probs > 0.5, 1, 0)
-conf_matrix <- table(Predicted = predicted_class, Actual = log_model$model$Status)
-print(conf_matrix)
-
-accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
-cat("Accuracy:", round(accuracy, 4), "\n")
-
-# Result: AUC = 0.6136 (modest — only somewhat better than random).
-# Accuracy = 83.68% looks strong but is misleading: the model predicts
-# "default" only 7 times out of 124,437 rows, catching just 7 of 20,319
-# actual defaulters (0.03% recall). This is a classic accuracy-paradox
-# caused by class imbalance (~24.6% default rate).
-
-
-# ---- Testing a lower threshold (0.3 instead of 0.5) ----
-predicted_class_03 <- ifelse(predicted_probs > 0.3, 1, 0)
-conf_matrix_03 <- table(Predicted = predicted_class_03, Actual = log_model$model$Status)
-print(conf_matrix_03)
-
-accuracy_03 <- sum(diag(conf_matrix_03)) / sum(conf_matrix_03)
-cat("Accuracy at 0.3 threshold:", round(accuracy_03, 4), "\n")
-
-recall_03 <- conf_matrix_03["1", "1"] / sum(conf_matrix_03[, "1"])
-cat("Recall at 0.3 threshold:", round(recall_03, 4), "\n")
-
-# Result: lowering the threshold to 0.3 barely improves recall (0.03%
-# -> 0.94%) while accuracy stays flat (~83.7-83.8%). Threshold choice
-# alone cannot fix a model with weak underlying discriminative power.
-
-
-# =========================================================
-# Addressing Class Imbalance
-# =========================================================
-# The baseline model's near-zero recall is a class imbalance problem
-# (~76% non-default / 24% default). Three techniques are compared below.
-
-# ---- Technique 1: SMOTE (Synthetic Minority Oversampling) ----
-library(smotefamily)
-
-smote_data <- df[, c("Status", "loan_amount", "income", "LTV", "dtir1", "Credit_Score")]
-smote_data <- na.omit(smote_data)
-
-smote_result <- SMOTE(X = smote_data[, -1], target = smote_data$Status, K = 5, dup_size = 2)
-balanced_data <- smote_result$data
-names(balanced_data)[ncol(balanced_data)] <- "Status"
-balanced_data$Status <- as.factor(balanced_data$Status)
-
-table(balanced_data$Status)   # new class balance: ~104k / ~61k
-
-log_model_smote <- glm(Status ~ loan_amount + income + LTV + dtir1 + Credit_Score,
-                       data = balanced_data, family = binomial)
-summary(log_model_smote)
-
-pred_smote <- predict(log_model_smote, type = "response")
-class_smote <- ifelse(pred_smote > 0.5, 1, 0)
-conf_smote <- table(Predicted = class_smote, Actual = balanced_data$Status)
-print(conf_smote)
-
-accuracy_smote <- sum(diag(conf_smote)) / sum(conf_smote)
-cat("Accuracy (SMOTE):", round(accuracy_smote, 4), "\n")
-
-recall_smote <- conf_smote["1", "1"] / sum(conf_smote[, "1"])
-cat("Recall (SMOTE):", round(recall_smote, 4), "\n")
-
-auc(roc(balanced_data$Status, pred_smote))
-
-# Result: SMOTE improved recall substantially (0.03% -> 6.13%, ~200x
-# more defaulters caught) but at a steep accuracy cost (83.68% -> 63.69%).
-# AUC barely changed (0.6136 -> 0.6153).
-
-
-# ---- Technique 2: Class-Weighted Logistic Regression ----
-class_weights <- ifelse(df$Status == "1",
-                        sum(df$Status == "0") / sum(df$Status == "1"),
-                        1)
-
-log_model_weighted <- glm(Status ~ loan_amount + income + LTV + dtir1 + Credit_Score,
-                          data = df, family = binomial, weights = class_weights)
-summary(log_model_weighted)
-
-pred_weighted <- predict(log_model_weighted, type = "response")
-class_weighted <- ifelse(pred_weighted > 0.5, 1, 0)
-conf_weighted <- table(Predicted = class_weighted, Actual = log_model_weighted$model$Status)
-print(conf_weighted)
-
-accuracy_weighted <- sum(diag(conf_weighted)) / sum(conf_weighted)
-cat("Accuracy (weighted):", round(accuracy_weighted, 4), "\n")
-
-recall_weighted <- conf_weighted["1", "1"] / sum(conf_weighted[, "1"])
-cat("Recall (weighted):", round(recall_weighted, 4), "\n")
-
-auc(roc(log_model_weighted$model$Status, pred_weighted))
-
-# Result: Weighted GLM achieved similar recall to SMOTE (6.50% vs 6.13%)
-# while keeping accuracy much closer to baseline (83.19% vs 63.69% for
-# SMOTE) — a clearly better trade-off. AUC again stayed flat (0.6113).
-#
-# Comparison across all techniques:
-#   Baseline GLM   -> AUC 0.614 | Recall 0.03%  | Accuracy 83.68%
-#   SMOTE + GLM    -> AUC 0.615 | Recall 6.13%  | Accuracy 63.69%
-#   Weighted GLM   -> AUC 0.611 | Recall 6.50%  | Accuracy 83.19%
-#
-# Business implication: class weighting is the more efficient imbalance-
-# correction technique — it improves recall as much as SMOTE without
-# sacrificing nearly as much accuracy, since it adjusts the loss function
-# rather than physically altering the training data. However, AUC stayed
-# essentially flat across ALL THREE logistic-based approaches (~0.61),
-# proving conclusively that class imbalance was never the fundamental
-# constraint — the limitation is the discriminative power of the five
-# predictors themselves. No amount of resampling or weighting can
-# manufacture predictive signal the underlying variables don't have.
-
-
-# =========================================================
-# Checking Assumptions: Multicollinearity
-# =========================================================
-# Logistic regression assumes predictors are not highly correlated with
-# each other. Checked using Variance Inflation Factor (VIF).
-library(car)
-
-vif(log_model)
-
-# Result: all VIF values well below the problem threshold of 5
-# (highest: income at 1.73; Credit_Score ~1.0). Confirms the
-# no-multicollinearity assumption is satisfied — consistent with
-# excluding rate_of_interest/Interest_rate_spread/Upfront_charges
-# earlier, and with loan_amount/property_value (the most correlated
-# pair overall, r=0.75) not both appearing in this model.
-
-
-# =========================================================
-# Final Model Recommendation
-# =========================================================
-# We recommend plain logistic regression, with class weighting applied,
-# as the final model. Ridge and LASSO produce nearly identical
-# coefficients to the unweighted baseline, confirming model stability
-# rather than overfitting, so their added complexity isn't justified.
-# Weighted GLM is preferred over SMOTE for addressing class imbalance,
-# since it achieves comparable recall improvement without SMOTE's steep
-# accuracy cost. However, AUC remained modest (~0.61-0.68 across all
-# models tested, including Naive Bayes in Task 8) regardless of
-# resampling, weighting, or threshold technique — confirming the
-# limitation lies in the discriminative power of the five predictors
-# available, not in how the imbalance or threshold was handled. We
-# recommend the bank prioritize acquiring additional predictive
-# variables (e.g. credit history depth, employment stability,
-# loan-purpose-specific risk factors from Task 4) as the primary path
-# to improving default detection, rather than further resampling.
+cat("\n===== 8. DIAGNOSTICS / RECOMMENDATION NOTES =====\n")
+if (requireNamespace("car", quietly = TRUE)) {
+  cat("Training-set logistic VIFs:\n")
+  print(car::vif(log_model))
+} else {
+  cat("Optional: install 'car' to calculate VIFs.\n")
+}
+cat("\nIMPORTANT INTERPRETATION NOTES:\n")
+cat("- Compare TEST AUC and default-class recall, precision and F1.\n")
+cat("- Accuracy can mislead when default is the minority class.\n")
+cat("- AUC measures ranking, not probability calibration or business value.\n")
+cat("- Weighted/SMOTE probabilities may require recalibration.\n")
+cat("- Examine linearity of continuous predictors in the logit and fairness.\n")
+cat("- Do NOT recommend a final model until these test results are reviewed.\n")
+cat("- Confirm what Status means in the original Kaggle source.\n")
+cat("- Missing dtir1 may bias the complete-case sample.\n")
+cat("- Person D should evaluate Naive Bayes on the SAME split.\n")

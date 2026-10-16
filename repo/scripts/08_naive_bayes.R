@@ -1,87 +1,402 @@
-# 08_naive_bayes.R — Task 8: Critical Evaluation of Bayesian Methods
 
-source("scripts/00_setup.R")
+# ============================================================
+# IT3081 - STATISTICAL MODELLING
+# TASK 8 - CRITICAL EVALUATION OF BAYESIAN METHODS
+# Project: Loan Default Risk Analysis
+#
+# Corrected Naive Bayes Evaluation
+# Comparable with Task 5 logistic regression models
+# ============================================================
+
+
+# ============================================================
+# 1. LOAD REQUIRED PACKAGES
+# ============================================================
+
+required_packages <- c("e1071", "pROC")
+
+for (pkg in required_packages) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+
 library(e1071)
+library(pROC)
 
 
-# =========================================================
-# Naive Bayes Model (comparison against Task 5's logistic regression)
-# =========================================================
-# Uses the same predictors and complete-case data as the Task 5 model,
-# for a fair comparison.
+# ============================================================
+# 2. LOAD SAME DATA SPLIT AS TASK 5
+# ============================================================
 
-nb_data <- df[, c("Status", "loan_amount", "income", "LTV", "dtir1", "Credit_Score")]
-nb_data <- na.omit(nb_data)
+# This script recreates the exact 60/20/20 stratified
+# partitions and training-median imputation used in Task 5.
+#
+# It also provides:
+# train, validation, test, predictors,
+# thresholds, calculate_metrics()
 
-nb_model <- naiveBayes(Status ~ loan_amount + income + LTV + dtir1 + Credit_Score,
-                       data = nb_data)
+source("scripts/05_threshold_validation.R")
+
+# Confirm binary outcome levels
+train$Status <- factor(train$Status, levels = c("0", "1"))
+validation$Status <- factor(
+  validation$Status,
+  levels = c("0", "1")
+)
+test$Status <- factor(test$Status, levels = c("0", "1"))
+
+cat("\n===== NAIVE BAYES DATA SPLIT =====\n")
+
+cat("Training rows:", nrow(train), "\n")
+cat("Validation rows:", nrow(validation), "\n")
+cat("Test rows:", nrow(test), "\n")
+
+
+# ============================================================
+# 3. TRAIN NAIVE BAYES MODEL
+# ============================================================
+
+cat("\n===== TRAINING NAIVE BAYES =====\n")
+
+# e1071::naiveBayes fits a Gaussian Naive Bayes
+# model for these numerical predictors.
+#
+# Train only on training observations.
+# Do NOT train using validation or test data.
+
+nb_formula <- as.formula(
+  paste(
+    "Status ~",
+    paste(predictors, collapse = " + ")
+  )
+)
+
+nb_model <- e1071::naiveBayes(
+  formula = nb_formula,
+  data = train,
+  laplace = 0
+)
+
 print(nb_model)
 
 
-# =========================================================
-# Evaluation — same method as Task 5, for direct comparison
-# =========================================================
-nb_pred <- predict(nb_model, nb_data, type = "raw")[, "1"]
-nb_class <- ifelse(nb_pred > 0.5, 1, 0)
+# ============================================================
+# 4. PREDICT VALIDATION PROBABILITIES
+# ============================================================
 
-conf_matrix_nb <- table(Predicted = nb_class, Actual = nb_data$Status)
-print(conf_matrix_nb)
+cat("\n===== VALIDATION PREDICTIONS =====\n")
 
-accuracy_nb <- sum(diag(conf_matrix_nb)) / sum(conf_matrix_nb)
-cat("Naive Bayes Accuracy:", round(accuracy_nb, 4), "\n")
+nb_validation_prob <- predict(
+  nb_model,
+  newdata = validation,
+  type = "raw"
+)[, "1"]
 
-library(pROC)
-roc_nb <- roc(nb_data$Status, nb_pred)
-auc(roc_nb)
+# Check probability distribution
+print(summary(nb_validation_prob))
 
-# Result: AUC = 0.676 (vs logistic regression's 0.614 from Task 5).
-# Recall on defaulters = 613/20319 = 3.02% (vs logistic regression's
-# 0.03%) — Naive Bayes catches roughly 100x more actual defaulters.
-# Accuracy is nearly identical between the two models (83.19% vs
-# 83.68%), reinforcing that accuracy alone is the wrong metric to
-# judge either model on.
+# Ensure probabilities are valid
+if (
+  anyNA(nb_validation_prob) ||
+  any(!is.finite(nb_validation_prob))
+) {
+  stop("Invalid Naive Bayes validation probabilities.")
+}
+
+
+# ============================================================
+# 5. SELECT THRESHOLD USING VALIDATION F1
+# ============================================================
+
+# Use the same threshold search grid as Task 5:
+# 0.10 to 0.50, increasing by 0.01.
+
+nb_validation_results <- do.call(
+  rbind,
+  lapply(
+    thresholds,
+    function(t) {
+      calculate_metrics(
+        validation$Status,
+        nb_validation_prob,
+        t
+      )
+    }
+  )
+)
+
+# Highest validation F1 wins.
+# If tied, select the higher threshold.
+
+nb_best_index <- order(
+  -nb_validation_results$F1,
+  -nb_validation_results$Threshold
+)[1]
+
+nb_best_threshold <-
+  nb_validation_results$Threshold[nb_best_index]
+
+nb_best_validation_f1 <-
+  nb_validation_results$F1[nb_best_index]
+
+cat("\n===== TOP VALIDATION RESULTS =====\n")
+
+print(
+  head(
+    nb_validation_results[
+      order(-nb_validation_results$F1),
+    ],
+    10
+  )
+)
+
+cat("\nSelected Naive Bayes threshold:",
+    nb_best_threshold, "\n")
+
+cat("Validation F1:",
+    round(nb_best_validation_f1, 4), "\n")
+
+
+# ============================================================
+# 6. FINAL TEST-SET EVALUATION
+# ============================================================
+
+cat("\n===== NAIVE BAYES TEST RESULTS =====\n")
+
+nb_test_prob <- predict(
+  nb_model,
+  newdata = test,
+  type = "raw"
+)[, "1"]
+
+if (
+  anyNA(nb_test_prob) ||
+  any(!is.finite(nb_test_prob))
+) {
+  stop("Invalid Naive Bayes test probabilities.")
+}
+
+nb_test_metrics <- calculate_metrics(
+  test$Status,
+  nb_test_prob,
+  nb_best_threshold
+)
+
+nb_roc <- pROC::roc(
+  response = test$Status,
+  predictor = nb_test_prob,
+  levels = c("0", "1"),
+  direction = "<",
+  quiet = TRUE
+)
+
+nb_auc <- as.numeric(pROC::auc(nb_roc))
+
+nb_test_metrics$Model <- "Naive Bayes"
+nb_test_metrics$Validation_F1 <- nb_best_validation_f1
+nb_test_metrics$ROC_AUC <- nb_auc
+
+print(nb_test_metrics)
+
+cat("\nNaive Bayes Test ROC-AUC:",
+    round(nb_auc, 4), "\n")
+
+
+# ============================================================
+# 7. COMPARE WITH DEFAULT THRESHOLD 0.50
+# ============================================================
+
+cat("\n===== NAIVE BAYES AT THRESHOLD 0.50 =====\n")
+
+print(
+  calculate_metrics(
+    test$Status,
+    nb_test_prob,
+    0.50
+  )
+)
+
+
+# ============================================================
+# 8. SIX-MODEL COMPARISON
+# ============================================================
+
+# Load the existing five-model results.
+# They must come from 05_final_model_comparison.R.
+
+comparison_path <- "results/task5_model_comparison.csv"
+
+if (!file.exists(comparison_path)) {
+  stop(
+    "Run scripts/05_final_model_comparison.R first."
+  )
+}
+
+existing_results <- read.csv(
+  comparison_path,
+  stringsAsFactors = FALSE
+)
+
+nb_comparison_row <- nb_test_metrics[, c(
+  "Model",
+  "Threshold",
+  "Validation_F1",
+  "Accuracy",
+  "Precision",
+  "Recall",
+  "Specificity",
+  "F1",
+  "ROC_AUC",
+  "TP",
+  "FP",
+  "TN",
+  "FN"
+)]
+
+# Combine into one comparison table
+six_model_comparison <- rbind(
+  existing_results,
+  nb_comparison_row
+)
+
+# Rank according to validation F1 only
+six_model_comparison <- six_model_comparison[
+  order(-six_model_comparison$Validation_F1),
+]
+
+rownames(six_model_comparison) <- NULL
+
+cat("\n============================================\n")
+cat("FINAL SIX-MODEL COMPARISON\n")
+cat("============================================\n")
+
+print(
+  six_model_comparison,
+  digits = 4,
+  row.names = FALSE
+)
+
+cat("\nHighest validation F1 model:\n")
+print(six_model_comparison$Model[1])
+
+
+# ============================================================
+# 9. SAVE RESULTS
+# ============================================================
+
+dir.create(
+  "results",
+  showWarnings = FALSE,
+  recursive = TRUE
+)
+
+write.csv(
+  six_model_comparison,
+  "results/task5_six_model_comparison.csv",
+  row.names = FALSE
+)
+
+cat("\nSaved comparison to:\n")
+cat("results/task5_six_model_comparison.csv\n")
+
+
+# ============================================================
+# 10. CRITICAL EVALUATION OF BAYESIAN METHODS
+# ============================================================
+
+# NAIVE BAYES
 #
-# Why Naive Bayes does better despite its independence assumption:
-# Naive Bayes is documented to remain robust even when its independence
-# assumption is technically violated, particularly when predictors show
-# low multicollinearity — which is exactly what we found in Task 5's
-# VIF check (all values below 1.8). Classification only requires the
-# relative ranking between classes to be roughly correct, not perfectly
-# calibrated probabilities, which is why the independence violation
-# here doesn't hurt performance much.
+# Naive Bayes applies Bayes' theorem and assumes
+# conditional independence between predictors
+# given the target class.
+#
+# For numerical variables, this implementation
+# models predictor values using class-conditional
+# Gaussian distributions.
+#
+# The independence assumption is a simplification.
+# Low VIF scores do not prove conditional independence.
+#
+# Advantages:
+# - Computationally efficient
+# - Easy to implement
+# - Produces class probability estimates
+#
+# Limitations:
+# - Independence assumption may be unrealistic
+# - Gaussian assumptions may not fit financial data
+# - Probability estimates may require calibration
+# - Performance depends on data quality
+#
+# The earlier in-sample ROC-AUC of 0.676 from the
+# original script is NOT a valid held-out
+# comparison against Task 5 models.
 
 
-# =========================================================
-# Critical Discussion: Naive Bayes, Bayesian Regression,
-# Bayesian Decision Making
-# =========================================================
+# BAYESIAN REGRESSION
+#
+# Bayesian regression specifies prior distributions
+# for model parameters and updates them with data
+# to obtain posterior distributions.
+#
+# Domain knowledge can inform prior selection,
+# but priors must be justified and tested.
+#
+# Compared with frequentist logistic regression,
+# Bayesian regression can represent parameter
+# uncertainty using posterior distributions.
+#
+# Bayesian regression is discussed conceptually
+# in this task. It is not implemented here.
 
-# Naive Bayes:
-# Despite assuming full independence between predictors — an assumption
-# not strictly true here — Naive Bayes outperformed logistic regression
-# on both AUC and recall. This suggests it may be a genuinely useful
-# complementary model for this problem, not merely a theoretical
-# exercise, particularly as a lightweight, fast-to-train first-pass
-# risk flag.
 
-# Bayesian Regression:
-# Unlike Naive Bayes' rigid independence assumption, Bayesian regression
-# could incorporate prior banking knowledge — for example, treating
-# "LTV above 90% is historically high-risk" as a prior belief — while
-# still updating estimates from the bank's own data. This could improve
-# estimates without needing a larger dataset, especially given the
-# modest signal strength found in both models so far.
+# BAYESIAN DECISION MAKING
+#
+# Bayesian decision theory combines estimated
+# outcome probabilities with the consequences
+# of different actions.
+#
+# For example:
+# - False negatives may represent missed defaults.
+# - False positives may represent reliable borrowers
+#   incorrectly flagged as high risk.
+#
+# Decision thresholds should account for these
+# costs and probability calibration.
+#
+# Maximizing F1 is an assignment evaluation
+# objective, not necessarily the optimal banking
+# decision policy.
 
-# Bayesian Decision Making:
-# Given that both models struggle with recall (missing most actual
-# defaulters), a Bayesian decision-theoretic framework could formally
-# weigh the cost of a false negative (approving a defaulter) against a
-# false positive (rejecting a good borrower), rather than relying on an
-# arbitrary 0.5 probability cutoff — directly addressing the threshold
-# limitation identified in Task 5.
 
-# Overall recommendation:
-# Naive Bayes' unexpectedly strong performance suggests the bank should
-# consider it as a lightweight complement to logistic regression for an
-# initial risk flag, while reserving logistic regression for decisions
-# requiring full interpretability and regulatory scrutiny.
+# ============================================================
+# 11. FINAL CONCLUSIONS
+# ============================================================
+
+cat("\n===== TASK 8 CONCLUSION =====\n")
+
+cat("Naive Bayes was fitted using training data only.\n")
+cat("Its threshold was selected on validation data.\n")
+cat("It was evaluated on the Task 5 test observations.\n")
+
+cat("Naive Bayes validation F1:",
+    round(nb_best_validation_f1, 4), "\n")
+
+cat("Naive Bayes test F1:",
+    round(nb_test_metrics$F1, 4), "\n")
+
+cat("Naive Bayes ROC-AUC:",
+    round(nb_auc, 4), "\n")
+
+cat("Best model by validation F1:",
+    six_model_comparison$Model[1], "\n")
+
+cat("\nIMPORTANT LIMITATIONS:\n")
+cat("- Status=1 is an unverified default label assumption.\n")
+cat("- Missingness is associated with loan status.\n")
+cat("- Dataset analyses have already informed model choices.\n")
+cat("- All comparisons are exploratory.\n")
+cat("- Do not use these models for automated lending decisions.\n")
+
+cat("\nTASK 8 NAIVE BAYES EVALUATION COMPLETE.\n")

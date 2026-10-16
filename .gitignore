@@ -3,3 +3,23 @@
 .RData
 .Ruserdata
 .DS_Store
+
+# RStudio temporary files
+.Rhistory
+.RData
+.RDataTmp
+.Rproj.user/
+
+# Credentials
+.Renviron
+.env
+.env.*
+rsconnect/
+
+# Private expert feedback
+*Expert*Feedback*Responses*.xlsx
+
+# Temporary files
+~$*
+.DS_Store
+/repo/outputs/PCA/pca_scores.csv
